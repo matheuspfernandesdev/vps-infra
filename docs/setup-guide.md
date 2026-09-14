@@ -73,6 +73,57 @@ ssh deploy@<IP_DA_VPS>
 
 A partir daqui, use o usuario `deploy`.
 
+#### Preciso criar o usuario mesmo se ja tenho servicos publicados?
+
+Sim. Criar um usuario e uma acao **aditiva**: nao toca em containers, servicos ou arquivos que ja rodam. O ganho e o **principio do minimo privilegio** — voce para de operar como root, entao um `rm -rf` errado ou um container root comprometido custa menos. Alem disso o resto do guia depende do `deploy` (4.1 faz `chown deploy:deploy /opt/vps-infra` e o `scp` vai para `deploy@IP`).
+
+Antes de criar, inventarie o que ja existe na VPS (todos os comandos sao somente leitura):
+
+```bash
+id deploy                          # usuario ja existe?
+ss -tlnp | grep -E ':(80|443)\s'   # quem ocupa 80/443 hoje?
+docker ps -a                       # containers, inclusive parados
+```
+
+O que procurar:
+
+| Cheque | Porque importa para este guia |
+|---|---|
+| Alguem escutando em 80/443 | Se houver, o `docker compose up` da 4.6 falha com `address already in use` |
+| Portas publicadas por containers existentes | Conflito direto com as portas do host |
+| Nome de container/rede iniciando com `vps-` | `container_name` duplicado faz o compose recusar subir |
+| `restart: always`/`unless-stopped` | O servico volta sozinho apos reboot — precisa conviver, nao so parar uma vez |
+
+#### A senha pedida pelo adduser
+
+O `adduser deploy` pede uma senha. Ela **nao** e usada para logar via SSH (a chave cuida disso). Ela e a senha do **`sudo`**: quem autoriza o `deploy` a fazer operacoes de root, pedida em todo `sudo` futuro. Gere uma forte e guarde no password manager:
+
+```bash
+openssl rand -base64 18
+```
+
+Os campos de geoinformacao (nome, telefone...) que vao em seguida sao todos opcionais — `Enter` em cada um e confirme com `Y`.
+
+#### O warning da primeira conexao SSH
+
+Ao rodar `ssh deploy@<IP_DA_VPS>` pela primeira vez, aparece:
+
+```
+The authenticity of host ... can't be established.
+ED25519 key fingerprint is SHA256:...
+Are you sure you want to continue connecting (yes/no/[fingerprint])?
+```
+
+**Nao e um erro.** E a protecao contra man-in-the-middle: o cliente SSH ainda nao viu a host key daquele endereco e pede para confirmar a impressao digital. Digitar `yes` grava a chave em `~/.ssh/known_hosts` do usuario que esta conectando, e nunca mais pergunta.
+
+Para conferir que o hash apresentado bate com a chave real do servidor:
+
+```bash
+ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+```
+
+Depois do `yes`, o banner `Welcome to Ubuntu` confirma que a **autenticacao por chave funcionou** — esse e o ponto critico do teste, e por isso ele roda em outro terminal sem fechar a sessao root.
+
 ### 2.3 — Configurar firewall UFW
 
 ```bash
@@ -93,7 +144,76 @@ To                         Action  From
 OpenSSH                    ALLOW   Anywhere
 80/tcp                     ALLOW   Anywhere
 443/tcp                    ALLOW   Anywhere
+OpenSSH (v6)               ALLOW   Anywhere (v6)
+80/tcp (v6)                ALLOW   Anywhere (v6)
+443/tcp (v6)               ALLOW   Anywhere (v6)
 ```
+
+As linhas `(v6)` sao normais: o UFW aplica as mesmas regras ao IPv6. O que importa para o Let's Encrypt e **nao** criar registro AAAA no DNS (secao 3) — isso e outra camada, nao o firewall.
+
+#### Por que apenas 22, 80 e 443?
+
+**UFW (Uncomplicated Firewall)** e o firewall padrao do Ubuntu, um front-end amigavel do `iptables`/`nftables` do kernel. Sem ele, toda porta que um servico escutar fica exposta para o mundo inteiro. Com ele ativo, so passam as portas liberadas explicitamente.
+
+| Porta | Por que fica aberta |
+|---|---|
+| 22 (OpenSSH) | Gerencia via SSH. Liberada **antes** do `ufw enable`, senao voce se tranca fora da VPS |
+| 80/tcp | Desafio HTTP-01 do Let's Encrypt (secao 4.7) e redirect para HTTPS |
+| 443/tcp | Todo o trafego real (S3 e Console) passa pelo Nginx com TLS |
+
+As portas do MinIO (9000/9001) **nao** sao liberadas porque escutam apenas em `127.0.0.1` e na rede Docker interna (secao 5.1). O mundo externo so ve o 443. Como o Nginx roteia por dominio, voce pode hospedar N servicos atras das mesmas duas portas.
+
+O perigo de deixar uma porta exposta "mesmo sem usar":
+
+- **Bots varrem a internet inteira 24/7.** Qualquer servico que vazar para `0.0.0.0` (Redis, API do Docker, MinIO em 9000/9001) e encontrado em horas — sem nem passar pelo basic auth do Nginx.
+- **Docker fura o UFW.** O Docker escreve regras direto no iptables (ver abaixo), entao uma porta publicada por container fica aberta mesmo com o firewall ativo. Por isso o guia binda o MinIO em `127.0.0.1` em vez de confiar no firewall.
+- "Nao estou usando" vale ate o primeiro `docker run -p` distrado ou uma atualizacao que muda o bind.
+- Firewall negando em silencio nao gera ruido; um servico exposto sendo explorado voce so descobre depois.
+
+#### iptables — onde o firewall realmente acontece
+
+O **iptables** e o mecanismo de baixo nivel do kernel Linux: a tabela de regras onde o filtro de pacotes de fato roda (aceitar, descartar, redirecionar por porta/IP/protocolo). O UFW e so uma interface humana que escreve regras la. Em Ubuntu 22.04+ o comando `iptables` ja e um wrapper do **nftables** (sucessor moderno), mas o conceito e o mesmo.
+
+```
+UFW (interface simples, humana)
+   ↓ escreve regras em
+iptables / nftables (backend do kernel)
+   ↓ que o Docker tambem manipula
+diretamente (por isso ele "fura" o UFW)
+```
+
+Voce raramente vai editar iptables manualmente neste projeto — basta saber que ele existe para entender por que o UFW sozinho nao segura porta publicada por container.
+
+#### O caminho de uma requisicao ate o MinIO
+
+Cada camada decide em um nivel diferente do trafego de rede:
+
+```
+Internet
+   │  pacote: IP da VPS :443
+   ▼
+1. iptables (filter)          ← UFW escreve aqui
+   "443 esta liberado? sim → deixa passar; 9000? nao → descarta"
+   Decide POR PORTA/IP (camada 4), nao olha conteudo
+   │
+   ▼
+2. iptables (NAT/DNAT)        ← Docker escreve aqui
+   host:443 → container nginx:443
+   (o mapeamento do `ports:` do compose)
+   │
+   ▼
+3. Nginx (reverse proxy, camada 7)
+   termina TLS (cert Let's Encrypt) e le o HOST:
+   s3.binaryten.com.br        → proxy_pass http://minio:9000
+   minio-console.binaryten... → basic auth → http://minio:9001
+   Decide POR DOMINIO/PATH — coisa que o UFW nao consegue fazer
+   │
+   ▼
+4. Rede Docker interna (vps-infra-internal)
+   minio:9000/9001 so existem aqui — nunca alcancaveis de fora
+```
+
+Resumo: **UFW e o porteiro que decide o que pode entrar; o NAT do Docker e a passagem host→container; o Nginx e o recepcionista que encaminha para a sala certa pelo nome no cracha (dominio)**. Uma requisicao nunca chega direto na aplicacao — entra por 80/443 e e roteada por nome, nunca por porta.
 
 ### 2.4 — Instalar Docker (pular se ja estiver instalado)
 
@@ -138,11 +258,42 @@ newgrp docker
 docker run hello-world
 ```
 
+#### Por que `newgrp` e necessario?
+
+A filiacao a grupos e resolvida **no momento do login** e fica gravada no token da sessao. O `usermod` edita o `/etc/group` na hora, mas a sessao atual continua com o token antigo — sem o grupo `docker`. O `newgrp docker` abre um shell novo com o grupo ja aplicado, entao o `docker run` funciona sem sair e voltar. Alternativa equivalente: fechar o SSH e logar de novo.
+
+Se pular o `newgrp`, o erro e:
+
+```
+permission denied while trying to connect to the Docker daemon socket
+```
+
+#### O grupo docker e um root equivalente (atencao de seguranca)
+
+O daemon Docker roda como root. Dar acesso ao socket (`/var/run/docker.sock`) para um usuario sem sudo significa que ele pode:
+
+- Criar um container montando o filesystem inteiro do host: `docker run -v /:/host busybox sh -c "echo ... >> /host/etc/shadow"` — escrita como root na hospedeira
+- Rodar containers `--privileged` e escapar para o host
+
+Ou seja: **quem esta no grupo `docker` e de fato um admin da maquina**, com o `usermod` do exemplo como unica diferenca de burocracia. Adicione ao grupo apenas usuarios nos quais voce confiaria um shell root.
+
+#### O que cada comando valida
+
+| Comando | O que comprova |
+|---|---|
+| `usermod -aG docker $USER` | Persiste a filiacao no `/etc/group` (o `-a` e crucial: sem ele, `-G` **substitui** todos os outros grupos do usuario, inclusive `sudo`) |
+| `newgrp docker` | Aplica o grupo na sessao atual |
+| `docker run hello-world` | Ponteira final: `deploy` fala com o daemon sem `sudo`, e o daemon consegue baixar imagem e criar container |
+
+Bonus: como o daemon e compartilhado na maquina, o `deploy` tambem consegue gerenciar containers criados pelo root (ex.: parar/reiniciar workers de outros projetos). O dono dos arquivos na imagem/volume nao muda — o controle vem do socket.
+
 ---
 
 ## 3. Configurar DNS na Hostinger
 
 > Passo a passo da interface: [hostinger-dns.md](./hostinger-dns.md)
+
+> **Antes:** confirme ONDE a zona DNS vive. A Hostinger pode ser so a registradora — se os nameservers do dominio apontam para outro provedor (ex.: `ns1/ns2.vercel-dns.com`), os registros devem ser criados **la**, e o editor da Hostinger fica inerte. Checar: `Resolve-DnsName binaryten.com.br -Type NS`. Detalhes e o caso Vercel (incluindo checagem de CAA para o Let's Encrypt) no Passo 0 de [hostinger-dns.md](./hostinger-dns.md).
 
 Crie **dois** registros `A` (o campo Nome e so o subdominio, nao o FQDN):
 
