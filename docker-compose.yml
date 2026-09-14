@@ -1,0 +1,80 @@
+services:
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    container_name: vps-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_SERVER_URL: https://${S3_DOMAIN}
+      MINIO_BROWSER_REDIRECT_URL: https://${CONSOLE_DOMAIN}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  nginx:
+    build: ./nginx
+    container_name: vps-nginx
+    restart: unless-stopped
+    depends_on:
+      minio:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      S3_DOMAIN: ${S3_DOMAIN}
+      CONSOLE_DOMAIN: ${CONSOLE_DOMAIN}
+    volumes:
+      - certbot_www:/var/www/certbot:ro
+      - certbot_conf:/etc/letsencrypt:ro
+      - ./security/.htpasswd:/etc/nginx/.htpasswd:ro
+    networks:
+      - internal
+      - edge
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  certbot:
+    image: certbot/certbot:v2.11.0
+    container_name: vps-certbot
+    volumes:
+      - certbot_www:/var/www/certbot:rw
+      - certbot_conf:/etc/letsencrypt:rw
+    networks:
+      - edge
+    profiles:
+      - certgen
+
+volumes:
+  minio_data:
+    name: vps-infra-minio-data
+  certbot_www:
+    name: vps-infra-certbot-www
+  certbot_conf:
+    name: vps-infra-certbot-conf
+
+networks:
+  internal:
+    name: vps-infra-internal
+  edge:
+    name: vps-infra-edge
