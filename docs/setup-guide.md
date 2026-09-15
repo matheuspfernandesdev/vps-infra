@@ -319,25 +319,92 @@ Os dois devem retornar o IP da VPS. So avance quando isso estiver correto.
 
 ### 4.1 — Colocar o repositorio na VPS
 
-Na VPS:
+**Preparo (uma vez, como `deploy`):**
 
 ```bash
 sudo mkdir -p /opt/vps-infra
 sudo chown deploy:deploy /opt/vps-infra
 ```
 
-Na **sua maquina local** (PowerShell), a partir da pasta `vps-infra`:
+#### Opcao A (recomendada): git clone via Deploy Key SSH
+
+O repo `matheuspfernandesdev/vps-infra` e **privado**, e o git nao envia mais credenciais por senha. Tentar clonar via HTTPS com a senha da conta falha com:
+
+```
+remote: Invalid username or token. Password authentication is not supported for Git operations.
+fatal: Authentication failed for 'https://github.com/.../'
+```
+
+As duas saidas para repo privado: HTTPS + **token** (PAT) ou SSH + **deploy key**. A deploy key e melhor:
+
+| | HTTPS + PAT | SSH deploy key |
+|---|---|---|
+| Escopo | Credencial da **conta** (escopo amplo) | Um **unico repo** |
+| Acesso | Pode escrever se o escopo deixar | **Somente leitura** (sem "Allow write access") |
+| Se a VPS for comprometida | Token exige rotacao imediata | Nada pode ser alterado no repo pela chave |
+| Validade | PAT expira (configuravel) | Sem validade |
+
+O "leia e use o scp" tambem resolve, mas o repo da VPS fica desvinculado do git: atualizar passa a ser repetir o scp.
+
+> **NUNCA** clone com o token na URL (`https://TOKEN@github.com/...`): ele fica gravado em texto puro no `.git/config` e no historico de shell.
+
+**A1 — Gerar o par de chaves na VPS (como `deploy`):**
+
+```bash
+ssh-keygen -t ed25519 -C "vps-infra-deploy" -f ~/.ssh/id_ed25519_github -N ""
+cat ~/.ssh/id_ed25519_github.pub
+```
+
+Copie a linha impressa (comeca com `ssh-ed25519 ...`) — essa e a **publica**, e a unica que sai da maquina. O `-N ""` (sem passphrase) e aceitavel aqui: a chave so le codigo ja publicavel no repo e nao da acesso a nada sensivel da VPS. A privada (`id_ed25519_github`, sem `.pub`) nunca deve ser copiada para outro lugar.
+
+**A2 — Cadastrar no GitHub:**
+
+Repo → **Settings** → **Deploy keys** → **Add deploy key**
+
+- Title: `vps-deploy` (identifica a maquina)
+- Key: cola a publica do A1
+- **Deixe "Allow write access" DESMARCADO** — e isso que torna a chave read-only
+- Add key
+
+**A3 — Ensinar o SSH a usar essa chave** (o padrao do ssh so considera `~/.ssh/id_ed25519`; como o nome e customizado, aponte explicitamente):
+
+```bash
+printf 'Host github.com\n  IdentityFile ~/.ssh/id_ed25519_github\n  IdentitiesOnly yes\n' >> ~/.ssh/config
+```
+
+`IdentitiesOnly yes`: tenta **somente** essa chave contra o github.com — evita o erro classico `Permission denied (publickey)` quando o ssh oferece outras chaves primeiro e esgota o limite de tentativas do servidor.
+
+**A4 — Testar a autenticacao:**
+
+```bash
+ssh -T git@github.com
+```
+
+Esperado: `Hi matheuspfernandesdev/vps-infra! You've successfully authenticated, but GitHub does not provide shell access.`
+
+Com deploy key, o GitHub responde com o **nome do repo**, nao o seu usuario — se aparecer `Hi matheuspfernandesdev!` sem o repo, a chave foi cadastrada no perfil pessoal (Settings → SSH keys) em vez das Deploy keys do repo; mova-a.
+
+**A5 — Clonar:**
+
+```bash
+cd /opt/vps-infra
+ls -A   # so pode clonar com o diretorio VAZIO (um clone que falhou no meio pode ter deixado lixo)
+git clone git@github.com:matheuspfernandesdev/vps-infra.git .
+```
+
+O `.` final clona no diretorio atual. Confirme `git status` limpo antes de seguir. Daqui pra frente, atualizar a infra e: `git pull` + secao 7.5.
+
+#### Opcao B (alternativa): scp da maquina local
+
+Sem git na VPS e sem credenciais. Na **sua maquina local** (PowerShell), a partir da pasta `vps-infra`:
 
 ```powershell
 scp -r * deploy@<IP_DA_VPS>:/opt/vps-infra/
 ```
 
-Ou, se o repo ja estiver no Git:
+Serve para o primeiro deploy, mas nao deixa trilha de versionamento: update = repetir o scp, e voce nao sabe o que esta rodando versus o que esta no git.
 
-```bash
-cd /opt/vps-infra
-git clone <REPO_URL> .
-```
+Em qualquer opcao: `.env` e `security/.htpasswd` ficam **fora do git** (gitignored) e sao criados na VPS nos Passos 4.3 e 4.4 — por isso clonar nao expoe segredo nenhum.
 
 ### 4.2 — Corrigir quebra de linha dos scripts (obrigatorio se copiou do Windows)
 
@@ -600,6 +667,8 @@ docker compose up -d nginx
 
 | Sintoma | Causa | Solucao |
 |---|---|---|
+| Clone: `Password authentication is not supported for Git operations` | Repo privado; o git nao aceita senha da conta via HTTPS | Usar a Opcao A da 4.1 (deploy key SSH) |
+| `Permission denied (publickey)` no `ssh -T git@github.com` | Chave no perfil pessoal em vez das Deploy keys do repo, ou `~/.ssh/config` sem `IdentitiesOnly` | Revisar A2/A3/A4 da 4.1 |
 | Nginx reinicia em loop, log `cannot load certificate` | Dummy certs nao criados | Rodar `bash certbot/scripts/create-dummy-certs.sh` e `docker compose up -d nginx` |
 | `S3_DOMAIN is required` nos scripts | `.env` nao existe ou nao foi preenchido | `cp .env.example .env` e editar |
 | `$'\r': command not found` | Scripts com CRLF do Windows | `sed -i 's/\r$//' certbot/scripts/*.sh minio/*.sh` |
