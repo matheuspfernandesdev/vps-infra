@@ -17,7 +17,7 @@ run_mc() {
   docker run --rm --network vps-infra-internal \
     -v "${REPO_ROOT}/minio/policies:/policies:ro" \
     --entrypoint /bin/sh \
-    minio/mc:latest \
+    quay.io/minio/mc:latest \
     -c "mc alias set local http://minio:9000 '${MINIO_ROOT_USER}' '${MINIO_ROOT_PASSWORD}' >/dev/null && $*"
 }
 
