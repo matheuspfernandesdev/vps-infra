@@ -416,13 +416,46 @@ Serve para o primeiro deploy, mas nao deixa trilha de versionamento: update = re
 
 Em qualquer opcao: `.env` e `security/.htpasswd` ficam **fora do git** (gitignored) e sao criados na VPS nos Passos 4.3 e 4.4 — por isso clonar nao expoe segredo nenhum.
 
-### 4.2 — Corrigir quebra de linha dos scripts (obrigatorio se copiou do Windows)
+### 4.2 — Ajustar quebra de linha e permissao de execucao (geralmente desnecessario)
 
 ```bash
 cd /opt/vps-infra
 sed -i 's/\r$//' certbot/scripts/*.sh minio/*.sh
 chmod +x certbot/scripts/*.sh minio/init-buckets.sh
 ```
+
+> **Geralmente desnecessario.** O repo ja tem um `.gitattributes` na raiz com `*.sh text eol=lf`, e os scripts estao rastreados como executaveis (modo `100755`). Em uma VPS fresca, apos `git clone`, os arquivos ja chegam em LF e com `+x` preservado — `sed` e `chmod` sao **no-ops**.
+>
+> Rode os dois comandos **apenas** se algum script quebrar com erro do tipo `$'\r': command not found` (CRLF) ou `Permission denied` (sem `+x`). Sao a rede de seguranca, nao o caminho feliz.
+
+#### Por que esses comandos ja foram obrigatorios (e nao sao mais)
+
+Historico do problema:
+
+- O repo nasceu em um sistema Windows; o git grava CRLF por padrao em `.sh`, e o bit `+x` nao e trackeavel em NTFS
+- Quem clonava em Linux via SSH recebia CRLF (script quebrava com `\r`) e sem permissao de execucao
+- O 4.2 era o "remendo" obrigatorio antes do 4.6
+
+A correcao definitiva foi feita em dois commits do repo:
+
+1. `.gitattributes` (`*.sh text eol=lf`) — git normaliza `.sh` para LF no checkout e no commit, **sobrescrevendo** o `core.autocrlf` global. O `sed` do 4.2 passa a ser no-op
+2. `core.fileMode true` + `git update-index --chmod=+x` — grava o bit `100755` no objeto tree. Em qualquer clone Linux, o `+x` e preservado, e `chmod` deixa de ser necessario
+
+#### Por que recomendo manter o 4.2 como verificacao (nao remover)
+
+- Quem usa `scp` (Opcao B da 4.1) em vez de `git clone` recebe arquivos com bits de permissao do cliente SSH, nao do git — o `chmod +x` ainda e necessario nesse caminho
+- Caso alguem tenha `core.autocrlf=true` no `.gitconfig` global, o `.gitattributes` aqui no repo vence para `*.sh`, mas e bom ter o comando na manga se aparecer CRLF em qualquer outro arquivo
+
+#### O efeito colateral que motivou esta secao (historico)
+
+Quando o `chmod +x` era obrigatorio, o git passava a enxergar a working tree como "modificada" apos cada setup (modo mudou de `100644` para `0755` no filesystem, mas o index ainda tinha `100644`). O proximo `git pull` abortava com:
+
+```
+error: Your local changes to the following files would be overwritten by merge
+Aborting
+```
+
+Resolvido agora com o `+x` rastreado no repo. Se voce vir esse erro no futuro apos o pull, significa que algum script novo chegou sem `+x` no tree — rode o `chmod` e abra uma PR para corrigir no repo tambem (`git update-index --chmod=+x ...` + commit).
 
 ### 4.3 — Configurar o `.env`
 
@@ -746,6 +779,7 @@ docker compose up -d nginx
 | Clone: `Password authentication is not supported for Git operations` | Repo privado; o git nao aceita senha da conta via HTTPS | Usar a Opcao A da 4.1 (deploy key SSH) |
 | `Permission denied (publickey)` no `ssh -T git@github.com` | Chave no perfil pessoal em vez das Deploy keys do repo, ou `~/.ssh/config` sem `IdentitiesOnly` | Revisar A2/A3/A4 da 4.1 |
 | `pull access denied for minio/minio, repository does not exist` no compose up | Imagens MinIO nao existem mais no Docker Hub | compose/scripts ja apontam para `quay.io/minio/...` — `git pull` na VPS e repetir o 4.6 |
+| `git pull` aborta: `Your local changes would be overwritten by merge` | `chmod +x` rodou em arquivos rastreados como `100644` (working tree suja) | Sem o `+x` trackeado no repo: `git checkout -- . && git pull && chmod +x certbot/scripts/*.sh minio/init-buckets.sh`. Para corrigir de vez: marcar `+x` no repo (4.2) |
 | Nginx reinicia em loop, log `cannot load certificate` | Dummy certs nao criados | Rodar `bash certbot/scripts/create-dummy-certs.sh` e `docker compose up -d nginx` |
 | `S3_DOMAIN is required` nos scripts | `.env` nao existe ou nao foi preenchido | `cp .env.example .env` e editar |
 | `$'\r': command not found` | Scripts com CRLF do Windows | `sed -i 's/\r$//' certbot/scripts/*.sh minio/*.sh` |
