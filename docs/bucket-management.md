@@ -20,7 +20,7 @@ set -a && source .env && set +a
 
 run_mc() {
   docker run --rm --network vps-infra-internal \
-    --entrypoint /bin/sh minio/mc:latest \
+    --entrypoint /bin/sh quay.io/minio/mc:latest \
     -c "mc alias set local http://minio:9000 '${MINIO_ROOT_USER}' '${MINIO_ROOT_PASSWORD}' >/dev/null && $*"
 }
 ```
@@ -66,7 +66,7 @@ Crie `/opt/vps-infra/minio/policies/meu-projeto-dev.json`:
 ```bash
 docker run --rm --network vps-infra-internal \
   -v /opt/vps-infra/minio/policies:/policies:ro \
-  --entrypoint /bin/sh minio/mc:latest \
+  --entrypoint /bin/sh quay.io/minio/mc:latest \
   -c "mc alias set local http://minio:9000 '${MINIO_ROOT_USER}' '${MINIO_ROOT_PASSWORD}' >/dev/null && mc admin policy create local meu-projeto-dev /policies/meu-projeto-dev.json"
 ```
 

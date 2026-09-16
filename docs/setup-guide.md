@@ -357,6 +357,16 @@ cat ~/.ssh/id_ed25519_github.pub
 
 Copie a linha impressa (comeca com `ssh-ed25519 ...`) — essa e a **publica**, e a unica que sai da maquina. O `-N ""` (sem passphrase) e aceitavel aqui: a chave so le codigo ja publicavel no repo e nao da acesso a nada sensivel da VPS. A privada (`id_ed25519_github`, sem `.pub`) nunca deve ser copiada para outro lugar.
 
+Anatomia do arquivo `.pub` (uma linha, tres campos separados por espaco):
+
+```
+ssh-ed25519 AAAAC3NzaC1...C1lEMT5AAAAI... vps-infra-deploy
+└────┬─────┘ └─────────────────────────┘ └──────┬───────┘
+ algoritmo       chave publica (base64)      comentario (-C)
+```
+
+Cole a **linha inteira** no GitHub. Colar so o blob do meio ate funciona, mas o formato esperado e a linha completa; o comentario e apenas rotulo humano para identificar a maquina na listagem de keys.
+
 **A2 — Cadastrar no GitHub:**
 
 Repo → **Settings** → **Deploy keys** → **Add deploy key**
@@ -441,6 +451,8 @@ openssl rand -base64 32
 
 Regras: `MINIO_ROOT_USER` minimo 3 caracteres; `MINIO_ROOT_PASSWORD` minimo 8 (use 32+). Guarde no password manager.
 
+> **Salvando no nano:** `Ctrl+O` **seguido de `Enter`** (o nano pergunta o nome do arquivo; sem o Enter ele fica travado esperando) grava; `Ctrl+X` sai. No Ubuntu 24.04 o `Ctrl+S` tambem salva direto. `Ctrl+K` corta a linha inteira — util para limpar placeholders sem apagar metade dela por engano.
+
 ### 4.4 — Gerar basic auth do Console
 
 ```bash
@@ -450,6 +462,12 @@ openssl passwd -apr1
 ```
 
 Digite a senha duas vezes. O comando imprime um hash (`$apr1$...`).
+
+**Use uma senha DIFERENTE da `MINIO_ROOT_PASSWORD`** (explicado logo abaixo). Gere uma unica e forte:
+
+```bash
+openssl rand -base64 18
+```
 
 ```bash
 nano security/.htpasswd
@@ -461,7 +479,53 @@ Deixe **uma unica linha**, sem comentarios:
 admin:$apr1$xxxxxxxx$yyyyyyyyyyyyyyyyyyyyy
 ```
 
-Essa senha e a **primeira** barreira do Console (Nginx). Depois ainda entra com o usuario root do MinIO.
+#### Duas barreiras, duas senhas
+
+Ao abrir `https://minio-console.binaryten.com.br`, aparecem **duas** autenticacoes em sequencia. Sao credenciais diferentes, com papeis diferentes — a senha do painel MinIO e a **segunda** pergunta:
+
+```
+Navegador → minio-console.binaryten.com.br
+   │
+   ▼
+Prompt 1 (popup cinza do navegador: "Sign in")
+   admin + senha do 4.4 (.htpasswd)     ← barreira do NGINX (a portaria).
+   │                                      Sem ela, a tela do MinIO nem
+   ▼                                      aparece para bots e scanners
+Tela de login do MinIO (username/password)
+   MINIO_ROOT_USER + MINIO_ROOT_PASSWORD ← barreira 2: a senha do painel
+                                          de verdade (definida na 4.3)
+```
+
+| | 4.4 `.htpasswd` | 4.3 `MINIO_ROOT_PASSWORD` |
+|---|---|---|
+| O que protege | A existencia do console | Controle total do storage (root) |
+| O que voce ve em 4.9 | `401` sem credencial; `-u admin:...` passa | Tela de login do MinIO no navegador |
+| Como trafega | Header `Authorization:` em **toda** requisicao | Somente no login da sessao |
+| Como e armazenado | Hash `apr1` (MD5, fraco) em arquivo montado no container do Nginx | Plaintext no `.env` da VPS (fora do git) |
+
+Por que nao repetir a mesma senha nas duas: voce estaria duplicando a credencial mais valiosa da infra na barreira **mais fraca** (hash crackavel por forca bruta + trafego em header a cada request). Se alguem estourar o `apr1`, ja ganha o root do MinIO de graca. Duas barreiras so viram defesa em profundidade quando sao independentes — e a senha do `.htpasswd` fica rotacionavel sem tocar no MinIO.
+
+#### Entendendo o hash que o openssl imprime
+
+O output do `openssl passwd -apr1` e o **hash** da senha digitada — nao a senha. Tres campos separados por `$`:
+
+```
+$apr1$36q3cxp8$MMGwIvF17rUPetk5Enpzg0
+└─┬──┘└──────┘└──────────┬───────────┘
+ tipo    salt          digest
+```
+
+| Parte | O que e |
+|---|---|
+| `apr1` | Algoritmo (variante MD5-crypt do Apache). Diz ao Nginx **como** verificar senhas contra essa linha |
+| Salt (8 chars aleatorios) | Garante que a mesma senha gere hash diferente a cada execucao — impede ataques por tabela pronta |
+| Digest | Resultado do MD5 iterado ~1000x sobre senha+salt — a "impressao digital" da senha |
+
+**Como funciona a validacao:** voce digita a senha → o Nginx pega o salt da linha, reaplica o `apr1` na senha recebida e compara os digests. Bateu → `200/302`; errou → `401`. Por isso o hash e unidirecional na pratica e o arquivo `.htpasswd` pode ser montado (read-only) no container sem entregar a senha.
+
+Detalhes:
+- Cada execucao do `openssl passwd -apr1` gera salt novo → hash diferente para a mesma senha. Qualquer output valido serve; nao precisa rerodar "para ter certeza"
+- O apr1 e **rapido** de testar em GPU (1000 iteracoes de MD5 e nada para hardware moderno) — reforca a regra: senha longa e unica aqui, e jamais a mesma do root do MinIO
 
 ### 4.5 — Criar certificados dummy (obrigatorio)
 
@@ -491,6 +555,18 @@ docker compose logs nginx
 ```
 
 Causa mais comum: dummy certs nao criados ou `.htpasswd` ausente.
+
+#### Por que o compose usa `quay.io/minio/...` e nao `minio/...`?
+
+A MinIO **removeu as imagens do Docker Hub** — o repo `minio/minio` nao existe mais la (a API do hub responde 404). Um `pull` da URL antiga falha com um erro enganoso:
+
+```
+pull access denied for minio/minio, repository does not exist or may require 'docker login'
+```
+
+Nao e falta de login nem rate limit: o repositorio sumiu mesmo. O Docker Hub responde "may require docker login" para QUALQUER repo inexistente (inclusive os privados), porque nao quer confirmar para qualquer um quais repos privados existem — existe e nao-existe viram a mesma resposta 404.
+
+A distribuicao oficial passou para **Quay.io**: `quay.io/minio/minio` e `quay.io/minio/mc`, onde inclusive os tags `RELEASE.*` continuam publicados (o pin deste repo, `RELEASE.2024-12-18T13-15-44Z`, existe la). Mesma imagem, mesmo conteudo — so o endereco mudou. Repositorios clonados deste repo antes da correcao precisam de um `git pull` para atualizar compose e scripts.
 
 ### 4.7 — Emitir certificados Let's Encrypt
 
@@ -568,7 +644,7 @@ Se a UI nao deixar anexar a policy na criacao, crie a chave e depois edite para 
 ### 5.3 — Conferir buckets
 
 ```bash
-docker run --rm --network vps-infra-internal --entrypoint /bin/sh minio/mc:latest -c \
+docker run --rm --network vps-infra-internal --entrypoint /bin/sh quay.io/minio/mc:latest -c \
   "mc alias set local http://minio:9000 'MINIO_ROOT_USER' 'MINIO_ROOT_PASSWORD' && mc ls local"
 ```
 
@@ -669,6 +745,7 @@ docker compose up -d nginx
 |---|---|---|
 | Clone: `Password authentication is not supported for Git operations` | Repo privado; o git nao aceita senha da conta via HTTPS | Usar a Opcao A da 4.1 (deploy key SSH) |
 | `Permission denied (publickey)` no `ssh -T git@github.com` | Chave no perfil pessoal em vez das Deploy keys do repo, ou `~/.ssh/config` sem `IdentitiesOnly` | Revisar A2/A3/A4 da 4.1 |
+| `pull access denied for minio/minio, repository does not exist` no compose up | Imagens MinIO nao existem mais no Docker Hub | compose/scripts ja apontam para `quay.io/minio/...` — `git pull` na VPS e repetir o 4.6 |
 | Nginx reinicia em loop, log `cannot load certificate` | Dummy certs nao criados | Rodar `bash certbot/scripts/create-dummy-certs.sh` e `docker compose up -d nginx` |
 | `S3_DOMAIN is required` nos scripts | `.env` nao existe ou nao foi preenchido | `cp .env.example .env` e editar |
 | `$'\r': command not found` | Scripts com CRLF do Windows | `sed -i 's/\r$//' certbot/scripts/*.sh minio/*.sh` |
