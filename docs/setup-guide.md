@@ -455,7 +455,7 @@ error: Your local changes to the following files would be overwritten by merge
 Aborting
 ```
 
-Resolvido agora com o `+x` rastreado no repo. Se voce vir esse erro no futuro apos o pull, significa que algum script novo chegou sem `+x` no tree — rode o `chmod` e abra uma PR para corrigir no repo tambem (`git update-index --chmod=+x ...` + commit).
+Resolvido agora com o `+x` rastreado no repo. **Se voce esta fazendo o pull que traz este fix e caiu no erro acima, a recuperacao e:** `git checkout -- . && git pull` — depois `ls -l` deve mostrar `-rwxr-xr-x` e `git status` limpo. Se voce vir esse erro no futuro apos o pull, significa que algum script novo chegou sem `+x` no tree — rode o `chmod` e abra uma PR para corrigir no repo tambem (`git update-index --chmod=+x ...` + commit).
 
 ### 4.3 — Configurar o `.env`
 
@@ -779,7 +779,7 @@ docker compose up -d nginx
 | Clone: `Password authentication is not supported for Git operations` | Repo privado; o git nao aceita senha da conta via HTTPS | Usar a Opcao A da 4.1 (deploy key SSH) |
 | `Permission denied (publickey)` no `ssh -T git@github.com` | Chave no perfil pessoal em vez das Deploy keys do repo, ou `~/.ssh/config` sem `IdentitiesOnly` | Revisar A2/A3/A4 da 4.1 |
 | `pull access denied for minio/minio, repository does not exist` no compose up | Imagens MinIO nao existem mais no Docker Hub | compose/scripts ja apontam para `quay.io/minio/...` — `git pull` na VPS e repetir o 4.6 |
-| `git pull` aborta: `Your local changes would be overwritten by merge` | `chmod +x` rodou em arquivos rastreados como `100644` (working tree suja) | Sem o `+x` trackeado no repo: `git checkout -- . && git pull && chmod +x certbot/scripts/*.sh minio/init-buckets.sh`. Para corrigir de vez: marcar `+x` no repo (4.2) |
+| `git pull` aborta: `Your local changes would be overwritten by merge` | VPS rodou `chmod +x`/`sed` antes do fix e a working tree ficou suja; o pull novo quer mudar os mesmos arquivos (agora com `quay.io` e `+x` rastreado) | **Transicao de quem ja rodou o 4.2 antes do fix:** `git checkout -- . && git pull` (descarta so o chmod/sed local, que o pull ja traz rastreado). Verifique `ls -l certbot/scripts/*.sh minio/init-buckets.sh` → `-rwxr-xr-x`. Depois `docker compose up -d minio nginx` |
 | Nginx reinicia em loop, log `cannot load certificate` | Dummy certs nao criados | Rodar `bash certbot/scripts/create-dummy-certs.sh` e `docker compose up -d nginx` |
 | `S3_DOMAIN is required` nos scripts | `.env` nao existe ou nao foi preenchido | `cp .env.example .env` e editar |
 | `$'\r': command not found` | Scripts com CRLF do Windows | `sed -i 's/\r$//' certbot/scripts/*.sh minio/*.sh` |
