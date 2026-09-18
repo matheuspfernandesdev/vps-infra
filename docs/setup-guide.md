@@ -627,6 +627,7 @@ MINIO_ACCESS_KEY=<access-key-dev>
 MINIO_SECRET_KEY=<secret-key-dev>
 MINIO_BUCKET_NAME=odd-oddities-dev
 STORAGE_DOMAIN=s3.binaryten.com.br
+# Bucket dev (path-style, privado, via URL pre-assinada): https://s3.binaryten.com.br/odd-oddities-dev
 ```
 
 ### Prod
@@ -636,12 +637,14 @@ MINIO_ACCESS_KEY=<access-key-prod>
 MINIO_SECRET_KEY=<secret-key-prod>
 MINIO_BUCKET_NAME=odd-oddities-prod
 STORAGE_DOMAIN=s3.binaryten.com.br
+# Bucket prod: https://s3.binaryten.com.br/odd-oddities-prod
 ```
 
 O worker usa:
 
 - `Endpoint=https://s3.binaryten.com.br` — upload/list
 - `PublicEndpoint=https://s3.binaryten.com.br` — URL pre-assinada (Meta)
+- Bucket dev link direto (path-style): `https://s3.binaryten.com.br/odd-oddities-dev/<objeto>` (requer URL pre-assinada, bucket privado)
 
 Os servicos `minio`, `nginx` e `certbot` **nao** devem existir no compose do Odd Oddities.
 
