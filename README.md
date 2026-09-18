@@ -17,7 +17,7 @@ Infraestrutura compartilhada de object storage (S3) com TLS. Repositorio separad
 | URL | Uso |
 |---|---|
 | `https://s3.binaryten.com.br` | API S3 (path-style) |
-| `https://minio-console.binaryten.com.br` | Console (basic auth Nginx + login MinIO) |
+| `https://minio-console.binaryten.com.br` | Console (login MinIO) |
 
 Buckets iniciais: `odd-oddities-dev`, `odd-oddities-prod`
 
@@ -59,8 +59,6 @@ O detalhe esta no [setup-guide.md](./docs/setup-guide.md). Nao pule o passo dos 
 ```bash
 # Na VPS, em /opt/vps-infra
 cp .env.example .env && nano .env
-cp security/.htpasswd.example security/.htpasswd
-openssl passwd -apr1   # colar o hash no .htpasswd
 
 sed -i 's/\r$//' certbot/scripts/*.sh minio/*.sh
 chmod +x certbot/scripts/*.sh minio/init-buckets.sh
@@ -89,6 +87,6 @@ bash minio/init-buckets.sh
 
 - Buckets privados; a Meta acessa so via URL pre-assinada
 - API S3 publica so na 443; portas 9000/9001 so em `127.0.0.1`
-- Console com basic auth + login MinIO
-- `.env` e `security/.htpasswd` fora do Git
+- Console com login MinIO (auth nativo)
+- `.env` fora do Git
 - Access keys por projeto/bucket, nunca o root nos apps

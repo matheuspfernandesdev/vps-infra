@@ -203,10 +203,10 @@ Internet
    │
    ▼
 3. Nginx (reverse proxy, camada 7)
-   termina TLS (cert Let's Encrypt) e le o HOST:
-   s3.binaryten.com.br        → proxy_pass http://minio:9000
-   minio-console.binaryten... → basic auth → http://minio:9001
-   Decide POR DOMINIO/PATH — coisa que o UFW nao consegue fazer
+    termina TLS (cert Let's Encrypt) e le o HOST:
+    s3.binaryten.com.br        → proxy_pass http://minio:9000
+    minio-console.binaryten... → proxy_pass http://minio:9001
+    Decide POR DOMINIO/PATH — coisa que o UFW nao consegue fazer
    │
    ▼
 4. Rede Docker interna (vps-infra-internal)
@@ -414,7 +414,7 @@ scp -r * deploy@<IP_DA_VPS>:/opt/vps-infra/
 
 Serve para o primeiro deploy, mas nao deixa trilha de versionamento: update = repetir o scp, e voce nao sabe o que esta rodando versus o que esta no git.
 
-Em qualquer opcao: `.env` e `security/.htpasswd` ficam **fora do git** (gitignored) e sao criados na VPS nos Passos 4.3 e 4.4 — por isso clonar nao expoe segredo nenhum.
+Em qualquer opcao: `.env` fica **fora do git** (gitignored) e e criado na VPS no Passo 4.3 — por isso clonar nao expoe segredo nenhum. O arquivo `security/.htpasswd` legado nao e mais usado (Console sem basic auth desde o fix `api/v1/session 401`).
 
 ### 4.2 — Ajustar quebra de linha e permissao de execucao (geralmente desnecessario)
 
@@ -486,79 +486,9 @@ Regras: `MINIO_ROOT_USER` minimo 3 caracteres; `MINIO_ROOT_PASSWORD` minimo 8 (u
 
 > **Salvando no nano:** `Ctrl+O` **seguido de `Enter`** (o nano pergunta o nome do arquivo; sem o Enter ele fica travado esperando) grava; `Ctrl+X` sai. No Ubuntu 24.04 o `Ctrl+S` tambem salva direto. `Ctrl+K` corta a linha inteira — util para limpar placeholders sem apagar metade dela por engano.
 
-### 4.4 — Gerar basic auth do Console
+### 4.4 — Basic auth do Console (removido)
 
-```bash
-cd /opt/vps-infra
-cp security/.htpasswd.example security/.htpasswd
-openssl passwd -apr1
-```
-
-Digite a senha duas vezes. O comando imprime um hash (`$apr1$...`).
-
-**Use uma senha DIFERENTE da `MINIO_ROOT_PASSWORD`** (explicado logo abaixo). Gere uma unica e forte:
-
-```bash
-openssl rand -base64 18
-```
-
-```bash
-nano security/.htpasswd
-```
-
-Deixe **uma unica linha**, sem comentarios:
-
-```
-admin:$apr1$xxxxxxxx$yyyyyyyyyyyyyyyyyyyyy
-```
-
-#### Duas barreiras, duas senhas
-
-Ao abrir `https://minio-console.binaryten.com.br`, aparecem **duas** autenticacoes em sequencia. Sao credenciais diferentes, com papeis diferentes — a senha do painel MinIO e a **segunda** pergunta:
-
-```
-Navegador → minio-console.binaryten.com.br
-   │
-   ▼
-Prompt 1 (popup cinza do navegador: "Sign in")
-   admin + senha do 4.4 (.htpasswd)     ← barreira do NGINX (a portaria).
-   │                                      Sem ela, a tela do MinIO nem
-   ▼                                      aparece para bots e scanners
-Tela de login do MinIO (username/password)
-   MINIO_ROOT_USER + MINIO_ROOT_PASSWORD ← barreira 2: a senha do painel
-                                          de verdade (definida na 4.3)
-```
-
-| | 4.4 `.htpasswd` | 4.3 `MINIO_ROOT_PASSWORD` |
-|---|---|---|
-| O que protege | A existencia do console | Controle total do storage (root) |
-| O que voce ve em 4.9 | `401` sem credencial; `-u admin:...` passa | Tela de login do MinIO no navegador |
-| Como trafega | Header `Authorization:` em **toda** requisicao | Somente no login da sessao |
-| Como e armazenado | Hash `apr1` (MD5, fraco) em arquivo montado no container do Nginx | Plaintext no `.env` da VPS (fora do git) |
-
-Por que nao repetir a mesma senha nas duas: voce estaria duplicando a credencial mais valiosa da infra na barreira **mais fraca** (hash crackavel por forca bruta + trafego em header a cada request). Se alguem estourar o `apr1`, ja ganha o root do MinIO de graca. Duas barreiras so viram defesa em profundidade quando sao independentes — e a senha do `.htpasswd` fica rotacionavel sem tocar no MinIO.
-
-#### Entendendo o hash que o openssl imprime
-
-O output do `openssl passwd -apr1` e o **hash** da senha digitada — nao a senha. Tres campos separados por `$`:
-
-```
-$apr1$36q3cxp8$MMGwIvF17rUPetk5Enpzg0
-└─┬──┘└──────┘└──────────┬───────────┘
- tipo    salt          digest
-```
-
-| Parte | O que e |
-|---|---|
-| `apr1` | Algoritmo (variante MD5-crypt do Apache). Diz ao Nginx **como** verificar senhas contra essa linha |
-| Salt (8 chars aleatorios) | Garante que a mesma senha gere hash diferente a cada execucao — impede ataques por tabela pronta |
-| Digest | Resultado do MD5 iterado ~1000x sobre senha+salt — a "impressao digital" da senha |
-
-**Como funciona a validacao:** voce digita a senha → o Nginx pega o salt da linha, reaplica o `apr1` na senha recebida e compara os digests. Bateu → `200/302`; errou → `401`. Por isso o hash e unidirecional na pratica e o arquivo `.htpasswd` pode ser montado (read-only) no container sem entregar a senha.
-
-Detalhes:
-- Cada execucao do `openssl passwd -apr1` gera salt novo → hash diferente para a mesma senha. Qualquer output valido serve; nao precisa rerodar "para ter certeza"
-- O apr1 e **rapido** de testar em GPU (1000 iteracoes de MD5 e nada para hardware moderno) — reforca a regra: senha longa e unica aqui, e jamais a mesma do root do MinIO
+> **Removido.** Versoes anteriores usavam `auth_basic` do Nginx (`security/.htpasswd`) como portaria antes do login do MinIO. O duplo auth quebra o Console: o `fetch` JS em `GET /api/v1/session` nao envia o header Basic, o Nginx responde `401` antes do MinIO e a SPA fica branca apos o login. O Console agora usa **apenas** o auth nativo do MinIO (`MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` da secao 4.3). O arquivo `security/.htpasswd` legado permanece no repo como exemplo mas **nao e montado nem exigido** — `docker compose up` nao falha se ele nao existir. Se quiser reativar basic auth, isole por `location` (ex.: `location /api/` sem auth, `location /` com auth) — ver Troubleshooting.
 
 ### 4.5 — Criar certificados dummy (obrigatorio)
 
@@ -587,7 +517,7 @@ Se o Nginx cair:
 docker compose logs nginx
 ```
 
-Causa mais comum: dummy certs nao criados ou `.htpasswd` ausente.
+Causa mais comum: dummy certs nao criados.
 
 #### Por que o compose usa `quay.io/minio/...` e nao `minio/...`?
 
@@ -625,16 +555,17 @@ docker compose exec nginx nginx -s reload
 
 ```bash
 curl -I https://s3.binaryten.com.br/minio/health/live
-# HTTP/2 200
+# HTTP/2 200  (body vazio e esperado — health check)
 
 curl -I https://minio-console.binaryten.com.br
-# HTTP/2 401  (basic auth do Nginx)
-
-curl -I -u admin:SENHA_DO_HTPASSWD https://minio-console.binaryten.com.br
-# HTTP/2 200 ou 302
+# HTTP/2 200  (Console sem basic auth; se ainda houver 401, ver Troubleshooting)
 ```
 
-No navegador: `https://minio-console.binaryten.com.br` → basic auth Nginx → tela de login MinIO (root user / root password do `.env`).
+No navegador: `https://minio-console.binaryten.com.br` → tela de login MinIO (root user / root password do `.env`).
+
+> **Se aparecer "Not secure" mesmo com 200 no curl:** e cache do Chrome de quando o cert era dummy. Teste em **aba anonima** (`Ctrl+Shift+N`) — deve mostrar o cadeado verde. Se funcionar no anonimo, limpe o site: F12 → Application → Storage → Clear site data, ou `Ctrl+Shift+Delete` → "Cached images and files". Ver Troubleshooting.
+
+> **`https://s3.binaryten.com.br/minio/health/live` sempre mostra tela branca** no navegador — e normal. O endpoint retorna `200` com body vazio. Use `curl -I` para confirmar.
 
 ---
 
@@ -661,7 +592,7 @@ A cota de 20 GB do Odd Oddities e aplicada **pelo worker** (BR-009), nao pelo Mi
 ### 5.2 — Criar Access Keys no Console
 
 1. Abra `https://minio-console.binaryten.com.br`
-2. Basic auth do Nginx, depois login root do MinIO
+2. Login com `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` do `.env`
 3. Menu **Access Keys** → **Create access key**
 4. Crie **duas** chaves:
 
@@ -788,10 +719,13 @@ docker compose up -d nginx
 | Certificado do console nao existe | Um unico cert SAN nos dois dominios | Este repo emite **dois** certs. Use `init-cert.sh` atual |
 | 502 Bad Gateway | MinIO nao healthy | `docker compose logs minio` |
 | `mc` em `localhost:9000` falha de fora da VPS | Porta 9000 so escuta em 127.0.0.1 | Use o script `init-buckets.sh` ou `127.0.0.1` via SSH |
-| 401 no Console | `.htpasswd` errado | Regenerar hash e recarregar Nginx |
+| Console branco apos login (`/api/v1/session 401`) | Duplo auth legado (`auth_basic` do Nginx sobre o Console) bloqueava o `fetch` do JS — Nginx retornava 401 antes do MinIO | **Removido neste repo:** `minio-console.conf.template` sem basic auth. `git pull` + `docker compose build nginx && docker compose up -d nginx`. Para reativar basic auth, isole por `location` (ver secao 4.4) |
+| 401 no Console (versao antiga com htpasswd) | `.htpasswd` errado | Regenerar hash e recarregar Nginx — nao se aplica a versao atual sem basic auth |
+| Navegador "Not secure" mas `curl -I` da 200 | Cache do Chrome do periodo com cert dummy | Testar em aba anonima (`Ctrl+Shift+N`). Se ok, limpar: F12 → Application → Storage → Clear site data |
+| `https://s3.../minio/health/live` tela branca | Comportamento esperado | Health check retorna 200 com body vazio. Confirmar com `curl -I` |
 | Upload S3 falha com redirect | Cliente usando `http://` | Endpoint do worker deve ser `https://s3.binaryten.com.br` |
 | Let's Encrypt falha com IPv6 | Registro AAAA sem IPv6 na VPS | Remover AAAA na Hostinger |
-| `error mounting .htpasswd` | Arquivo nao criado | `cp security/.htpasswd.example security/.htpasswd` e editar |
+| `error mounting .htpasswd` (legado) | Versao antiga exigia `.htpasswd` | Nao se aplica — versao atual nao monta `.htpasswd`. Remova a linha do volume se estiver em compose customizado |
 | Worker na VPS nao alcança `s3.binaryten.com.br` | Hairpin NAT | No compose do app: `extra_hosts: ["s3.binaryten.com.br:host-gateway"]` |
 | `Conflict: container name vps-certbot` | Container de um `run` anterior | `docker rm -f vps-certbot` e repetir o script |
 

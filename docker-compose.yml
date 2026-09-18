@@ -44,7 +44,6 @@ services:
     volumes:
       - certbot_www:/var/www/certbot:ro
       - certbot_conf:/etc/letsencrypt:ro
-      - ./security/.htpasswd:/etc/nginx/.htpasswd:ro
     networks:
       - internal
       - edge
